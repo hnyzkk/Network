@@ -27,69 +27,87 @@
 #define SLEEP_US 1500000
 
 // 컬러 코드
-#define RESET   "\033[0m"
-#define RED     "\033[31m"
-#define GREEN   "\033[32m"
-#define YELLOW  "\033[33m"
-#define BLUE    "\033[34m"
+#define RESET "\033[0m"
+#define RED "\033[31m"
+#define GREEN "\033[32m"
+#define YELLOW "\033[33m"
+#define BLUE "\033[34m"
 #define MAGENTA "\033[35m"
-#define CYAN    "\033[36m"
-#define WHITE   "\033[37m"
+#define CYAN "\033[36m"
+#define WHITE "\033[37m"
 #define BOLDRED "\033[1;31m"
 #define BOLDYEL "\033[1;33m"
 #define BOLDMAG "\033[1;35m"
 #define BOLDCYN "\033[1;36m"
 
-typedef enum { MODE_NORMAL, MODE_DUP3, MODE_TIMEOUT } Mode;
+typedef enum
+{
+    MODE_NORMAL,
+    MODE_DUP3,
+    MODE_TIMEOUT
+} Mode;
 
-void die(const char* msg) {
+void die(const char *msg)
+{
     perror(msg);
     exit(1);
 }
 
-Mode parse_mode(const char* s) {
-    if (strcmp(s, "normal") == 0)  return MODE_NORMAL;
-    if (strcmp(s, "dup3") == 0)    return MODE_DUP3;
-    if (strcmp(s, "timeout") == 0) return MODE_TIMEOUT;
+Mode parse_mode(const char *s)
+{
+    if (strcmp(s, "normal") == 0)
+        return MODE_NORMAL;
+    if (strcmp(s, "dup3") == 0)
+        return MODE_DUP3;
+    if (strcmp(s, "timeout") == 0)
+        return MODE_TIMEOUT;
     fprintf(stderr, "unknown mode: %s\n", s);
     exit(1);
 }
 
-void send_end(int s, struct sockaddr_in* dst) {
-    const char* msg = "END";
-    sendto(s, msg, strlen(msg), 0, (struct sockaddr*)dst, sizeof(*dst));
+void send_end(int s, struct sockaddr_in *dst)
+{
+    const char *msg = "END";
+    sendto(s, msg, strlen(msg), 0, (struct sockaddr *)dst, sizeof(*dst));
 }
 
 // ------------------------------ UI 유틸 ------------------------------
 
-void box_top() {
+void box_top()
+{
     printf(MAGENTA "┌──────────────────────────────────────────────────────────┐\n" RESET);
 }
-void box_mid() {
+void box_mid()
+{
     printf(MAGENTA "├──────────────────────────────────────────────────────────┤\n" RESET);
 }
-void box_bot() {
+void box_bot()
+{
     printf(MAGENTA "└──────────────────────────────────────────────────────────┘\n" RESET);
 }
 
-void show_round_header(int round, double cwnd, double ssthresh) {
+void show_round_header(int round, double cwnd, double ssthresh)
+{
     box_top();
     printf(MAGENTA "│  ROUND %d  │  cwnd = %.2f MSS   ssthresh = %.2f MSS          │\n" RESET,
-           round, cwnd/MSS, ssthresh/MSS);
+           round, cwnd / MSS, ssthresh / MSS);
     box_mid();
 }
 
-void show_event(const char* msg) {
+void show_event(const char *msg)
+{
     printf(BOLDRED "%s\n" RESET, msg);
 }
 
-void show_timer_event(const char* msg) {
+void show_timer_event(const char *msg)
+{
     printf(BOLDCYN "%s\n" RESET, msg);
 }
 
 // ------------------------------ NORMAL ------------------------------
 
-void run_normal(int s, struct sockaddr_in* dst) {
+void run_normal(int s, struct sockaddr_in *dst)
+{
     double cwnd = MSS;
     int ssthresh = 15000;
     int seq = 0;
@@ -97,58 +115,68 @@ void run_normal(int s, struct sockaddr_in* dst) {
 
     printf(BOLDMAG "\n=== [NORMAL 시나리오 시작] ===\n" RESET);
 
-    for (int step = 0; step < 6; step++) {
+    int slow_start_rounds = 0;
+    int ca_rounds = 0;
+
+    while (1)
+    {
         int packets = cwnd / MSS;
-        if (packets < 1) packets = 1;
+        if (packets < 1)
+            packets = 1;
 
         show_round_header(round, cwnd, ssthresh);
 
-        // TX
-        for (int i = 0; i < packets; i++) {
-            printf(BLUE "  [TX] seq=%d len=%d   →→→   " RESET, seq, MSS);
-            printf(WHITE "(송신)\n" RESET);
-
+        // 보내기
+        for (int i = 0; i < packets; i++)
+        {
+            printf(BLUE "  [TX] seq=%d len=%d\n" RESET, seq, MSS);
             char buf[BUF];
-            socklen_t dlen = sizeof(*dst);
-            snprintf(buf, sizeof(buf),
-                     "DATA seq=%d len=%d", seq, MSS);
-            sendto(s, buf, strlen(buf), 0, (struct sockaddr*)dst, dlen);
+            snprintf(buf, sizeof(buf), "DATA seq=%d len=%d", seq, MSS);
+            sendto(s, buf, strlen(buf), 0, (struct sockaddr *)dst, sizeof(*dst));
             seq += MSS;
             usleep(300000);
         }
 
-        printf(CYAN "  --- RTT 경과: ACK 수신 시작 ---\n" RESET);
+        printf(CYAN "  --- RTT 경과: ACK 수신 ---\n" RESET);
 
-        // ACK
-        for (int i = 0; i < packets; i++) {
+        // ACK 받기
+        for (int i = 0; i < packets; i++)
+        {
             char buf[BUF];
             struct sockaddr_in src;
             socklen_t slen = sizeof(src);
 
-            int n = recvfrom(s, buf, sizeof(buf)-1, 0,
-                             (struct sockaddr*)&src, &slen);
-            if (n < 0) die("recvfrom");
+            int n = recvfrom(s, buf, sizeof(buf) - 1, 0,
+                             (struct sockaddr *)&src, &slen);
+            if (n < 0)
+                die("recvfrom normal");
             buf[n] = 0;
-
             int ack = 0;
             sscanf(buf, "ACK %d", &ack);
+            printf(GREEN "  [RX] ACK %d\n" RESET, ack);
 
-            printf(GREEN "  [RX] ACK=%d   ←←← (수신)\n" RESET, ack);
-
-            if ((int)cwnd < ssthresh) {
+            if ((int)cwnd < ssthresh)
+            {
+                slow_start_rounds++;
                 cwnd += MSS;
-                printf(YELLOW "     ↳ Slow Start 증가 → cwnd = %.2f MSS\n" RESET, cwnd/MSS);
-            } else {
+                printf(YELLOW "     ↳ Slow Start 증가 → cwnd=%.2f MSS\n" RESET, cwnd / MSS);
+            }
+            else
+            {
+                ca_rounds++;
                 double inc = MSS * ((double)MSS / cwnd);
                 cwnd += inc;
-                printf(YELLOW "     ↳ Congestion Avoidance 증가 → cwnd = %.2f MSS\n" RESET,
-                       cwnd/MSS);
+                printf(YELLOW "     ↳ CA 증가 → cwnd=%.2f MSS\n" RESET, cwnd / MSS);
             }
         }
 
         box_bot();
         usleep(SLEEP_US);
         round++;
+
+        // 종료 조건
+        if (slow_start_rounds >= 3 && ca_rounds >= 2)
+            break;
     }
 
     printf(BOLDMAG "\n=== [NORMAL 시나리오 종료] ===\n" RESET);
@@ -157,19 +185,21 @@ void run_normal(int s, struct sockaddr_in* dst) {
 
 // ------------------------------ 3 DUP ACK ------------------------------
 
-void run_dup3(int s, struct sockaddr_in* dst) {
+void run_dup3(int s, struct sockaddr_in *dst)
+{
     double cwnd = 15000;
     int ssthresh = 15000;
 
     printf(BOLDMAG "\n=== [3 DUP ACK 시나리오 시작] ===\n" RESET);
 
     int seqs[] = {1500, 3000, 4500, 6000, 3000};
-    int count = sizeof(seqs)/sizeof(seqs[0]);
+    int count = sizeof(seqs) / sizeof(seqs[0]);
     int lastAck = -1;
     int dupCnt = 0;
     int halved = 0;
 
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < count; i++)
+    {
         char buf[BUF];
         int seq = seqs[i];
 
@@ -177,49 +207,57 @@ void run_dup3(int s, struct sockaddr_in* dst) {
         snprintf(buf, sizeof(buf),
                  "DATA seq=%d len=%d", seq, MSS);
         sendto(s, buf, strlen(buf), 0,
-               (struct sockaddr*)dst, sizeof(*dst));
+               (struct sockaddr *)dst, sizeof(*dst));
         usleep(SLEEP_US);
 
-        //ACK
+        // ACK
         struct sockaddr_in src;
         socklen_t slen = sizeof(src);
-        int n = recvfrom(s, buf, sizeof(buf)-1, 0,
-                         (struct sockaddr*)&src, &slen);
-        if (n < 0) die("recvfrom dup3");
+        int n = recvfrom(s, buf, sizeof(buf) - 1, 0,
+                         (struct sockaddr *)&src, &slen);
+        if (n < 0)
+            die("recvfrom dup3");
         buf[n] = 0;
 
         int ack = 0;
         sscanf(buf, "ACK %d", &ack);
         printf(GREEN "[RX] ACK %d 수신\n" RESET, ack);
 
-        if (i == 0) {
+        if (i == 0)
+        {
             lastAck = ack;
             dupCnt = 0;
-        } else if (ack == lastAck) {
+        }
+        else if (ack == lastAck)
+        {
             dupCnt++;
             printf(YELLOW "    중복 ACK (%d회)\n" RESET, dupCnt);
 
-            if (dupCnt == 3 && !halved) {
+            if (dupCnt == 3 && !halved)
+            {
                 show_event("\n*** <<< 3 DUP ACK 사건 발생 >>> ***");
 
                 double prev = cwnd;
                 cwnd /= 2.0;
-                if (cwnd < MSS) cwnd = MSS;
+                if (cwnd < MSS)
+                    cwnd = MSS;
                 ssthresh = cwnd;
 
                 printf(BOLDYEL "    cwnd: %.1f MSS → %.1f MSS\n" RESET,
-                       prev/MSS, cwnd/MSS);
-                printf(BOLDMAG "    ssthresh = %.1f MSS\n" RESET, ssthresh/MSS);
+                       prev / MSS, cwnd / MSS);
+                printf(BOLDMAG "    ssthresh = %.1f MSS\n" RESET, ssthresh / MSS);
                 halved = 1;
             }
-
-        } else {
+        }
+        else
+        {
             printf(CYAN "    새로운 ACK → 누적 구간 복구 처리\n" RESET);
 
-            if (halved) {
+            if (halved)
+            {
                 double inc = MSS * ((double)MSS / cwnd);
                 cwnd += inc;
-                printf(YELLOW "    CA 증가 1회 → cwnd=%.2f MSS\n" RESET, cwnd/MSS);
+                printf(YELLOW "    CA 증가 1회 → cwnd=%.2f MSS\n" RESET, cwnd / MSS);
             }
 
             lastAck = ack;
@@ -233,7 +271,8 @@ void run_dup3(int s, struct sockaddr_in* dst) {
 
 // ------------------------------ TIMEOUT ------------------------------
 
-void run_timeout(int s, struct sockaddr_in* dst) {
+void run_timeout(int s, struct sockaddr_in *dst)
+{
     double cwnd = 15000;
     int ssthresh = 15000;
 
@@ -253,15 +292,16 @@ void run_timeout(int s, struct sockaddr_in* dst) {
 
     printf(BLUE "\n[TX] seq=%d len=%d\n" RESET, seq, MSS);
     snprintf(buf, sizeof(buf), "DATA seq=%d len=%d", seq, MSS);
-    sendto(s, buf, strlen(buf), 0, (struct sockaddr*)dst, dlen);
+    sendto(s, buf, strlen(buf), 0, (struct sockaddr *)dst, dlen);
     usleep(SLEEP_US);
 
     // ACK
     struct sockaddr_in src;
     socklen_t slen = sizeof(src);
-    int n = recvfrom(s, buf, sizeof(buf)-1, 0,
-                     (struct sockaddr*)&src, &slen);
-    if (n < 0) die("first ack timeout");
+    int n = recvfrom(s, buf, sizeof(buf) - 1, 0,
+                     (struct sockaddr *)&src, &slen);
+    if (n < 0)
+        die("first ack timeout");
     buf[n] = 0;
     int ack;
     sscanf(buf, "ACK %d", &ack);
@@ -269,36 +309,40 @@ void run_timeout(int s, struct sockaddr_in* dst) {
 
     // (2) 1500~6000 손실 구간
     int losses[] = {1500, 3000, 4500, 6000};
-    int lossCount = sizeof(losses)/sizeof(losses[0]);
+    int lossCount = sizeof(losses) / sizeof(losses[0]);
 
-    for (int i = 0; i < lossCount; i++) {
+    for (int i = 0; i < lossCount; i++)
+    {
         seq = losses[i];
         printf(BLUE "\n[TX] seq=%d (손실 구간)\n" RESET, seq);
 
         // 타이머 걸기 시작 (첫 손실 구간에서)
-        if (i == 0) {
+        if (i == 0)
+        {
             show_timer_event("*** (타이머 시작) seq=1500 ***");
         }
 
         snprintf(buf, sizeof(buf), "DATA seq=%d len=%d", seq, MSS);
-        sendto(s, buf, strlen(buf), 0, (struct sockaddr*)dst, dlen);
+        sendto(s, buf, strlen(buf), 0, (struct sockaddr *)dst, dlen);
         usleep(SLEEP_US);
     }
 
     // (3) ACK 기다리기 → TimeOut
     printf(CYAN "\n[TX] 손실 패킷 ACK 대기 중...\n" RESET);
 
-    n = recvfrom(s, buf, sizeof(buf)-1, 0, (struct sockaddr*)&src, &slen);
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+    n = recvfrom(s, buf, sizeof(buf) - 1, 0, (struct sockaddr *)&src, &slen);
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+    {
         show_event("\n*** <<< TIMEOUT 발생 >>> ***");
 
         double prev = cwnd;
         ssthresh = prev / 2.0;
-        if (ssthresh < MSS) ssthresh = MSS;
+        if (ssthresh < MSS)
+            ssthresh = MSS;
 
         cwnd = MSS;
 
-        printf(BOLDMAG "    ssthresh = %.2f MSS\n" RESET, ssthresh/MSS);
+        printf(BOLDMAG "    ssthresh = %.2f MSS\n" RESET, ssthresh / MSS);
         printf(BOLDYEL "    cwnd = 1 MSS 로 감소\n" RESET);
     }
 
@@ -306,81 +350,104 @@ void run_timeout(int s, struct sockaddr_in* dst) {
     printf(BOLDMAG "\n=== [회복 구간: Slow Start + CA 시연] ===\n" RESET);
 
     seq = 1500;
-    for (int round = 1; round <= 7; round++) {
+    int slow_rounds = 0;
+    int ca_rounds = 0;
 
+    while (1)
+    {
         int packets = cwnd / MSS;
-        if (packets < 1) packets = 1;
+        if (packets < 1)
+            packets = 1;
 
-        show_round_header(round, cwnd, ssthresh);
+        show_round_header(slow_rounds + ca_rounds + 1, cwnd, ssthresh);
 
-        // TX 연속
-        for (int i = 0; i < packets; i++) {
+        // TX
+        for (int i = 0; i < packets; i++)
+        {
             printf(BLUE "  [TX] seq=%d len=%d\n" RESET, seq, MSS);
             snprintf(buf, sizeof(buf),
                      "DATA seq=%d len=%d", seq, MSS);
             sendto(s, buf, strlen(buf), 0,
-                   (struct sockaddr*)dst, dlen);
+                   (struct sockaddr *)dst, dlen);
             seq += MSS;
             usleep(300000);
         }
 
         printf(CYAN "  --- RTT 경과: ACK 수신 ---\n" RESET);
 
-        // ACK 연속
-        for (int i = 0; i < packets; i++) {
-            int n2 = recvfrom(s, buf, sizeof(buf)-1, 0,
-                              (struct sockaddr*)&src, &slen);
-            if (n2 < 0) die("recvfrom recovery");
+        // ACK
+        for (int i = 0; i < packets; i++)
+        {
+            int n2 = recvfrom(s, buf, sizeof(buf) - 1, 0,
+                              (struct sockaddr *)&src, &slen);
+            if (n2 < 0)
+                die("recvfrom recovery");
             buf[n2] = 0;
 
             int ack2;
             sscanf(buf, "ACK %d", &ack2);
             printf(GREEN "  [RX] ACK %d\n" RESET, ack2);
 
-            if ((int)cwnd < ssthresh) {
+            if ((int)cwnd < ssthresh)
+            {
                 cwnd += MSS;
-                printf(YELLOW "     ↳ Slow Start 증가 → cwnd = %.2f MSS\n" RESET,
-                       cwnd/MSS);
-            } else {
+                slow_rounds++;
+                printf(YELLOW "     ↳ Slow Start 증가 → cwnd=%.2f MSS\n" RESET,
+                       cwnd / MSS);
+            }
+            else
+            {
                 double inc = MSS * ((double)MSS / cwnd);
                 cwnd += inc;
-                printf(YELLOW "     ↳ CA 증가 → cwnd = %.2f MSS (+%.1f bytes)\n" RESET,
-                       cwnd/MSS, inc);
+                ca_rounds++;
+                printf(YELLOW "     ↳ CA 증가 → cwnd=%.2f MSS\n" RESET,
+                       cwnd / MSS);
             }
         }
 
         box_bot();
         usleep(SLEEP_US);
-    }
 
-    printf(BOLDMAG "\n=== [TIMEOUT 시나리오 종료] ===\n" RESET);
-    send_end(s, dst);
+        // 종료 조건
+        if (slow_rounds >= 3 && ca_rounds >= 2)
+        {
+            printf(BOLDMAG "\n=== [TIMEOUT 시나리오 종료] ===\n" RESET);
+            send_end(s, dst);
+            break;
+        }
+    }
 }
 
 // ------------------------------ MAIN ------------------------------
 
-int main(int argc, char** argv) {
-    if (argc < 4) {
+int main(int argc, char **argv)
+{
+    if (argc < 4)
+    {
         fprintf(stderr, "usage: %s <dst_ip> <dst_port> <mode>\n", argv[0]);
         return 1;
     }
 
-    const char* ip = argv[1];
+    const char *ip = argv[1];
     int port = atoi(argv[2]);
     Mode mode = parse_mode(argv[3]);
 
     int s = socket(AF_INET, SOCK_DGRAM, 0);
-    if (s < 0) die("socket");
+    if (s < 0)
+        die("socket");
 
     struct sockaddr_in dst;
     memset(&dst, 0, sizeof(dst));
     dst.sin_family = AF_INET;
-    dst.sin_port   = htons(port);
+    dst.sin_port = htons(port);
     inet_pton(AF_INET, ip, &dst.sin_addr);
 
-    if (mode == MODE_NORMAL)      run_normal(s, &dst);
-    else if (mode == MODE_DUP3)   run_dup3(s, &dst);
-    else if (mode == MODE_TIMEOUT)run_timeout(s, &dst);
+    if (mode == MODE_NORMAL)
+        run_normal(s, &dst);
+    else if (mode == MODE_DUP3)
+        run_dup3(s, &dst);
+    else if (mode == MODE_TIMEOUT)
+        run_timeout(s, &dst);
 
     close(s);
     return 0;
