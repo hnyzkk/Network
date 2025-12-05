@@ -1,16 +1,5 @@
-// sender.c - TCP 혼잡제어 데모용 송신자 (UI강화 버전)
-// 로직 변경 없음 — 오직 출력만 강화됨.
-//
-// 기능:
-//  - 컬러 출력
-//  - ASCII 박스 UI
-//  - 송수신 화살표 기반 Flow 시각화
-//  - SlowStart/CA/3DupACK/Timeout 이벤트 컬러 강조
-//
-// 빌드:
-//    clang -O2 -Wall -Wextra -o sender sender.c
-//
-// 실행:
+// sender.c - TCP 혼잡제어 송신자
+// 실행 방법:
 //    ./sender <dst_ip> <dst_port> <normal|dup3|timeout>
 
 #include <stdio.h>
@@ -22,7 +11,8 @@
 #include <arpa/inet.h>
 #include <errno.h>
 
-#define MSS 1500
+// 기본 설정
+#define MSS 1500 // 초기 임계치
 #define BUF 256
 #define SLEEP_US 1500000
 
@@ -40,19 +30,21 @@
 #define BOLDMAG "\033[1;35m"
 #define BOLDCYN "\033[1;36m"
 
-typedef enum
+typedef enum // 시나리오 구분을 위한 구조체
 {
     MODE_NORMAL,
     MODE_DUP3,
     MODE_TIMEOUT
 } Mode;
 
+// 에러 발생 시 프로그램 종료을 위한 함수
 void die(const char *msg)
 {
     perror(msg);
     exit(1);
 }
 
+// 인자로 받은 시나리오 명을 구조체로 바꿔주는 함수
 Mode parse_mode(const char *s)
 {
     if (strcmp(s, "normal") == 0)
@@ -65,6 +57,7 @@ Mode parse_mode(const char *s)
     exit(1);
 }
 
+// 송수신 끝을 알리는 함수
 void send_end(int s, struct sockaddr_in *dst)
 {
     const char *msg = "END";
@@ -72,7 +65,6 @@ void send_end(int s, struct sockaddr_in *dst)
 }
 
 // ------------------------------ UI 유틸 ------------------------------
-
 void box_top()
 {
     printf(MAGENTA "┌──────────────────────────────────────────────────────────┐\n" RESET);
@@ -93,48 +85,45 @@ void show_round_header(int round, double cwnd, double ssthresh)
            round, cwnd / MSS, ssthresh / MSS);
     box_mid();
 }
-
 void show_event(const char *msg)
 {
     printf(BOLDRED "%s\n" RESET, msg);
 }
-
 void show_timer_event(const char *msg)
 {
     printf(BOLDCYN "%s\n" RESET, msg);
 }
 
 // ------------------------------ NORMAL ------------------------------
-
 void run_normal(int s, struct sockaddr_in *dst)
 {
     double cwnd = MSS;
     int ssthresh = 15000;
     int seq = 0;
-    int round = 1;
+    int round = 1; // 한 시나리오 내 라운드 구분을 위한 변수
 
     printf(BOLDMAG "\n=== [NORMAL 시나리오 시작] ===\n" RESET);
 
-    int slow_start_rounds = 0;
-    int ca_rounds = 0;
+    int slow_start_rounds = 0; // 느린시작 라운드
+    int ca_rounds = 0;         // 위험회피 라운드
 
     while (1)
     {
-        int packets = cwnd / MSS;
+        int packets = cwnd / MSS; // 보낼 패킷 수 = 윈도우 크기 / MSS
         if (packets < 1)
             packets = 1;
 
         show_round_header(round, cwnd, ssthresh);
 
-        // 보내기
+        // 패킷 수만큼 보내기
         for (int i = 0; i < packets; i++)
         {
             printf(BLUE "  [TX] seq=%d len=%d\n" RESET, seq, MSS);
             char buf[BUF];
-            snprintf(buf, sizeof(buf), "DATA seq=%d len=%d", seq, MSS);
-            sendto(s, buf, strlen(buf), 0, (struct sockaddr *)dst, sizeof(*dst));
-            seq += MSS;
-            usleep(300000);
+            snprintf(buf, sizeof(buf), "DATA seq=%d len=%d", seq, MSS);           // buf에 seq와 len에 대한 문자열 저장
+            sendto(s, buf, strlen(buf), 0, (struct sockaddr *)dst, sizeof(*dst)); // buf의 내용을 그대로 전송
+            seq += MSS;                                                           // 보낸만큼 seq 업데이트
+            usleep(300000);                                                       // 0.3초 딜레이
         }
 
         printf(CYAN "  --- RTT 경과: ACK 수신 ---\n" RESET);
@@ -155,12 +144,14 @@ void run_normal(int s, struct sockaddr_in *dst)
             sscanf(buf, "ACK %d", &ack);
             printf(GREEN "  [RX] ACK %d\n" RESET, ack);
 
+            // 윈도우 크기가 임계치보다 작다면 느린시작 -> 지수적 증가
             if ((int)cwnd < ssthresh)
             {
                 slow_start_rounds++;
                 cwnd += MSS;
                 printf(YELLOW "     ↳ Slow Start 증가 → cwnd=%.2f MSS\n" RESET, cwnd / MSS);
             }
+            // 아니면 혼잡회피 -> 선형적 증가
             else
             {
                 ca_rounds++;
@@ -174,7 +165,7 @@ void run_normal(int s, struct sockaddr_in *dst)
         usleep(SLEEP_US);
         round++;
 
-        // 종료 조건
+        // 종료 조건(임의)
         if (slow_start_rounds >= 3 && ca_rounds >= 2)
             break;
     }
@@ -184,25 +175,26 @@ void run_normal(int s, struct sockaddr_in *dst)
 }
 
 // ------------------------------ 3 DUP ACK ------------------------------
-
 void run_dup3(int s, struct sockaddr_in *dst)
 {
+    // 초기 윈도우 크기와 임계치 설정
     double cwnd = 15000;
     int ssthresh = 15000;
 
     printf(BOLDMAG "\n=== [3 DUP ACK 시나리오 시작] ===\n" RESET);
 
-    int seqs[] = {1500, 3000, 4500, 6000, 3000};
+    int seqs[] = {1500, 3000, 4500, 6000, 3000}; // 임의적으로 3 dup를 발생시키기 위해 seq 순서에 대한 배열 생성(3000에 대해 3 dup인 상황)
     int count = sizeof(seqs) / sizeof(seqs[0]);
-    int lastAck = -1;
-    int dupCnt = 0;
-    int halved = 0;
+    int lastAck = -1; // 마지막으로 받은 ack
+    int dupCnt = 0;   // 중복 ack 횟수
+    int halved = 0;   // cwnd 절반 감소 여부를 나타내는 플래그
 
     for (int i = 0; i < count; i++)
     {
         char buf[BUF];
         int seq = seqs[i];
 
+        // send
         printf(BLUE "\n[TX] seq=%d len=%d\n" RESET, seq, MSS);
         snprintf(buf, sizeof(buf),
                  "DATA seq=%d len=%d", seq, MSS);
@@ -210,7 +202,7 @@ void run_dup3(int s, struct sockaddr_in *dst)
                (struct sockaddr *)dst, sizeof(*dst));
         usleep(SLEEP_US);
 
-        // ACK
+        // recv ack
         struct sockaddr_in src;
         socklen_t slen = sizeof(src);
         int n = recvfrom(s, buf, sizeof(buf) - 1, 0,
@@ -228,31 +220,34 @@ void run_dup3(int s, struct sockaddr_in *dst)
             lastAck = ack;
             dupCnt = 0;
         }
+        // 중복 ack 수신
         else if (ack == lastAck)
         {
             dupCnt++;
             printf(YELLOW "    중복 ACK (%d회)\n" RESET, dupCnt);
 
-            if (dupCnt == 3 && !halved)
+            if (dupCnt == 3 && !halved) // 중복 횟수가 3이고 cwnd가 절반으로 감소된 적이 없다면
             {
                 show_event("\n*** <<< 3 DUP ACK 사건 발생 >>> ***");
 
-                double prev = cwnd;
+                double prev = cwnd; // 감소 이전 cwnd 값
                 cwnd /= 2.0;
                 if (cwnd < MSS)
                     cwnd = MSS;
-                ssthresh = cwnd;
+                ssthresh = cwnd; // 임계치 조정
 
                 printf(BOLDYEL "    cwnd: %.1f MSS → %.1f MSS\n" RESET,
                        prev / MSS, cwnd / MSS);
                 printf(BOLDMAG "    ssthresh = %.1f MSS\n" RESET, ssthresh / MSS);
-                halved = 1;
+                halved = 1; // 절반으로 감소했음을 표시
             }
         }
+        // 중복 ack가 아닌 새로운 값이 도착 = 복구 및 위험회피 구간
         else
         {
             printf(CYAN "    새로운 ACK → 누적 구간 복구 처리\n" RESET);
 
+            // 위험회피
             if (halved)
             {
                 double inc = MSS * ((double)MSS / cwnd);
@@ -270,7 +265,6 @@ void run_dup3(int s, struct sockaddr_in *dst)
 }
 
 // ------------------------------ TIMEOUT ------------------------------
-
 void run_timeout(int s, struct sockaddr_in *dst)
 {
     double cwnd = 15000;
@@ -327,20 +321,21 @@ void run_timeout(int s, struct sockaddr_in *dst)
         usleep(SLEEP_US);
     }
 
-    // (3) ACK 기다리기 → TimeOut
+    // (3) ACK 기다리기 → Timeout
     printf(CYAN "\n[TX] 손실 패킷 ACK 대기 중...\n" RESET);
 
     n = recvfrom(s, buf, sizeof(buf) - 1, 0, (struct sockaddr *)&src, &slen);
+    // Timeout 발생
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
     {
         show_event("\n*** <<< TIMEOUT 발생 >>> ***");
 
         double prev = cwnd;
-        ssthresh = prev / 2.0;
+        ssthresh = prev / 2.0; // 임계치 조정
         if (ssthresh < MSS)
             ssthresh = MSS;
 
-        cwnd = MSS;
+        cwnd = MSS; // 1 MSS로 조정
 
         printf(BOLDMAG "    ssthresh = %.2f MSS\n" RESET, ssthresh / MSS);
         printf(BOLDYEL "    cwnd = 1 MSS 로 감소\n" RESET);
@@ -361,7 +356,7 @@ void run_timeout(int s, struct sockaddr_in *dst)
 
         show_round_header(slow_rounds + ca_rounds + 1, cwnd, ssthresh);
 
-        // TX
+        // send
         for (int i = 0; i < packets; i++)
         {
             printf(BLUE "  [TX] seq=%d len=%d\n" RESET, seq, MSS);
@@ -375,7 +370,7 @@ void run_timeout(int s, struct sockaddr_in *dst)
 
         printf(CYAN "  --- RTT 경과: ACK 수신 ---\n" RESET);
 
-        // ACK
+        // recv ack
         for (int i = 0; i < packets; i++)
         {
             int n2 = recvfrom(s, buf, sizeof(buf) - 1, 0,
@@ -388,6 +383,7 @@ void run_timeout(int s, struct sockaddr_in *dst)
             sscanf(buf, "ACK %d", &ack2);
             printf(GREEN "  [RX] ACK %d\n" RESET, ack2);
 
+            // 느린시작
             if ((int)cwnd < ssthresh)
             {
                 cwnd += MSS;
@@ -395,6 +391,7 @@ void run_timeout(int s, struct sockaddr_in *dst)
                 printf(YELLOW "     ↳ Slow Start 증가 → cwnd=%.2f MSS\n" RESET,
                        cwnd / MSS);
             }
+            // 혼잡회피
             else
             {
                 double inc = MSS * ((double)MSS / cwnd);
@@ -408,7 +405,7 @@ void run_timeout(int s, struct sockaddr_in *dst)
         box_bot();
         usleep(SLEEP_US);
 
-        // 종료 조건
+        // 종료 조건(임의)
         if (slow_rounds >= 3 && ca_rounds >= 2)
         {
             printf(BOLDMAG "\n=== [TIMEOUT 시나리오 종료] ===\n" RESET);
@@ -419,7 +416,6 @@ void run_timeout(int s, struct sockaddr_in *dst)
 }
 
 // ------------------------------ MAIN ------------------------------
-
 int main(int argc, char **argv)
 {
     if (argc < 4)
@@ -428,10 +424,12 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    // 인자: 목적지 ip, 목적지 port, 시나리오
     const char *ip = argv[1];
     int port = atoi(argv[2]);
     Mode mode = parse_mode(argv[3]);
 
+    // 소켓 설정
     int s = socket(AF_INET, SOCK_DGRAM, 0);
     if (s < 0)
         die("socket");
@@ -442,6 +440,7 @@ int main(int argc, char **argv)
     dst.sin_port = htons(port);
     inet_pton(AF_INET, ip, &dst.sin_addr);
 
+    // 인자에 따라 시나리오 실행
     if (mode == MODE_NORMAL)
         run_normal(s, &dst);
     else if (mode == MODE_DUP3)
